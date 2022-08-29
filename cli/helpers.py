@@ -1,10 +1,24 @@
+# Copyright 2019 Iguazio
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+import os
 import pathlib
 import subprocess
 from pathlib import Path
-from typing import Union, List, Set, Iterable, Dict
+from typing import Union, List, Set, Dict
 import sys
-import re
-
+from glob import iglob
 import yaml
 from jinja2 import Template
 
@@ -86,6 +100,16 @@ def install_requirements(directory: str, requirements: Union[List[str], Set[str]
     exit_on_non_zero_return(requirements_install)
 
 
+def get_txt_requirements(path: Union[Path, str]) -> List[str]:
+    txt_requirements = []
+    if (Path(path) / 'requirements.txt').exists():
+        with open(os.path.join(path, 'requirements.txt'), 'r') as req_file:
+            for req in req_file:
+                txt_requirements.append(req.strip('\n'))
+
+    return txt_requirements
+
+
 def get_item_yaml_values(
     item_path: pathlib.Path, keys: Union[str, Set[str]]
 ) -> Dict[str, Set[str]]:
@@ -125,53 +149,38 @@ def get_item_yaml_values(
     return values_dict
 
 
-def remove_version_constraints(requirements: Iterable) -> Set[str]:
+def get_mock_requirements(source_dir: Union[str, Path]) -> List[str]:
     """
-    Remove version constraints from requirements.
-    For example:
-        pytorch==1.2.3 -> pytorch
-    Also ignores mlrun[] requirements.
+    Getting all requirements from .py files inside all the subdirectories of the given source dir.
+    Only the files with the same name as their parent directory are taken in consideration.
+    The requirements are being collected from rows inside the files that starts with `from` or `import`
+    and parsed only to the base package.
 
-    :param requirements:    An iterable that contains all the requirements as strings.
+    :param source_dir: The directory that contains all the functions.
 
-    :returns:                A set with all the parsed requirements.
+    :return: A list of all the requirements.
     """
-    version_chars = ["==", "~=", "<=", ">=", "<", ">", "!="]
-    mlrun_pkgs_regex = re.compile(r"^mlrun\[.+]$")
-    parsed_requirements = set()
-    # Parsing the requirements by removing version constraints:
-    for requirement in requirements:
-        # For the case of mlrun[]
-        if mlrun_pkgs_regex.search(requirement):
+    mock_reqs = set()
+
+    if isinstance(source_dir, Path):
+        source_dir = source_dir.__str__()
+
+    # Iterating over all .py files in the subdirectories:
+    for filename in iglob(f"{source_dir}/**/*.py"):
+        file_path = Path(filename)
+        if file_path.parent.name != file_path.stem:
+            # Skipping test files
             continue
-        else:
-            # Looking for version constraint case:
-            for version_char in version_chars:
-                if version_char in requirement:
-                    # Found version constraint and dropping the constraint:
-                    requirement = requirement.split(version_char)[0]
-                    break
-        parsed_requirements.add(requirement)
+        # Getting all packages:
+        with open(filename, 'r') as f:
+            lines = list(filter(None, f.read().split("\n")))
+            for line in lines:
+                words = line.split(' ')
+                words = [w for w in words if w]
+                if words and (words[0] == 'from' or words[0] == 'import'):
+                    mock_reqs.add(words[1].split('.')[0])
 
-    return parsed_requirements
-
-
-def get_requirements_from_txt(requirements_path: str):
-    """
-    Collecting all requirements from requirements.txt.
-
-    :param requirements_path:   The path to the requirements.txt or the parent dir of this file.
-    """
-    requirements_path = Path(requirements_path)
-    if requirements_path.is_dir():
-        requirements_path = requirements_path / "requirements.txt"
-    if not requirements_path.exists():
-        return set()
-    with open(requirements_path, "r") as f:
-        # removing empty lines:
-        requirements = set(filter(None, f.read().split("\n")))
-
-    return requirements
+    return sorted(mock_reqs)
 
 
 def exit_on_non_zero_return(completed_process: subprocess.CompletedProcess):

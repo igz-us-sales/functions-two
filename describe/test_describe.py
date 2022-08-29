@@ -1,3 +1,17 @@
+# Copyright 2019 Iguazio
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 import os
 import shutil
 from pathlib import Path
@@ -6,9 +20,9 @@ from typing import Set
 import mlrun
 import pandas as pd
 import pytest
-from mlrun import import_function
+from mlrun import code_to_function, import_function, new_function
 from mlrun.execution import MLClientCtx
-from sklearn.datasets import make_classification
+from sklearn.datasets import make_classification, make_regression
 
 DATA_PATH = os.path.abspath("./artifacts/random_dataset.parquet")
 PLOTS_PATH = os.path.abspath("./artifacts/plots")
@@ -25,7 +39,7 @@ def _validate_paths(paths: Set):
         if Path(full_path).is_file():
             print(f"{path} exist")
         else:
-            assert FileNotFoundError(f"{path} not found!")
+            raise FileNotFoundError(f"{path} not found!")
 
 
 @pytest.fixture(autouse=True)
@@ -41,29 +55,74 @@ def run_around_tests():
     yield
     _validate_paths(
         {
-            "corr.html",
+            "correlation.html",
             "correlation-matrix.csv",
-            "hist_mat.html",
-            "imbalance.html",
-            "imbalance-weights-vec.csv",
+            "scatter-2d.html",
             "violin.html",
+            "describe.csv",
+            # "hist.html",
+            "histograms.html",
         }
     )
 
 
-def test_sanity_local():
+@pytest.mark.parametrize("problem_type", ["classification"])
+def test_sanity_local(problem_type):
     """
     Test simple scenario
     """
     describe_func = import_function("function.yaml")
     is_test_passed = True
-    _create_data(n_samples=100, n_features=5, n_classes=3, n_informative=3)
+    _create_data(
+        n_samples=1000,
+        n_features=10,
+        n_classes=3,
+        n_informative=3,
+        reg=(problem_type == "regression"),
+    )
     try:
         describe_run = describe_func.run(
             name="task-describe",
             handler="analyze",
             inputs={"table": DATA_PATH},
-            params={"label_column": "label"},
+            params={"label_column": "label", "problem_type": problem_type},
+            artifact_path=os.path.abspath("./artifacts"),
+            local=True,
+        )
+
+    except Exception as exception:
+        print(f"- The test failed - raised the following error:\n- {exception}")
+        is_test_passed = False
+    _validate_paths(
+        {
+            "imbalance.html",
+            "imbalance-weights-vec.csv",
+        }
+    )
+
+    assert is_test_passed
+
+
+@pytest.mark.parametrize("problem_type", ["classification", "regression"])
+def test_none_label(problem_type):
+    """
+    Test simple scenario
+    """
+    describe_func = import_function("function.yaml")
+    is_test_passed = True
+    _create_data(
+        n_samples=100,
+        n_features=5,
+        n_classes=3,
+        n_informative=3,
+        reg=(problem_type == "regression"),
+    )
+    try:
+        describe_run = describe_func.run(
+            name="task-describe",
+            handler="analyze",
+            inputs={"table": DATA_PATH},
+            params={"label_column": "", "problem_type": problem_type},
             artifact_path=os.path.abspath("./artifacts"),
             local=True,
         )
@@ -78,12 +137,21 @@ def test_sanity_local():
 @pytest.mark.parametrize("n_features", [5, 10, 20])
 @pytest.mark.parametrize("n_classes", [3, 4])
 @pytest.mark.parametrize("n_informative", [3])
-def test_different_size_of_dataset(n_samples, n_features, n_classes, n_informative):
+@pytest.mark.parametrize("problem_type", ["classification", "regression"])
+def test_different_size_of_dataset(
+    problem_type, n_samples, n_features, n_classes, n_informative
+):
     """
     Test different size of data
     """
     is_test_passed = True
-    df = _create_data(n_samples, n_features, n_classes, n_informative)
+    df = _create_data(
+        n_samples,
+        n_features,
+        n_classes,
+        n_informative,
+        reg=(problem_type == "regression"),
+    )
     describe_func = import_function("function.yaml")
 
     try:
@@ -91,7 +159,7 @@ def test_different_size_of_dataset(n_samples, n_features, n_classes, n_informati
             name="task-describe",
             handler="analyze",
             inputs={"table": DATA_PATH},
-            params={"label_column": "label"},
+            params={"label_column": "label", "problem_type": problem_type},
             artifact_path=os.path.abspath("./artifacts"),
             local=True,
         )
@@ -99,11 +167,17 @@ def test_different_size_of_dataset(n_samples, n_features, n_classes, n_informati
         print(f" The test failed - raised the following error:\n- {exception}")
         is_test_passed = False
 
-    _validate_paths({f"hist_{col}.html" for col in df.columns if col is not "label"})
+    _validate_paths(
+        {
+            "imbalance.html",
+            "imbalance-weights-vec.csv",
+        }
+    )
     assert is_test_passed
 
 
-def test_data_already_loaded():
+@pytest.mark.parametrize("problem_type", ["classification", "regression"])
+def test_data_already_loaded(problem_type):
     """
     Test scenario on already loaded data artifact
     """
@@ -114,7 +188,13 @@ def test_data_already_loaded():
         kind="job",
         image="mlrun/ml-models",
     )
-    df = _create_data(n_samples=100, n_features=5, n_classes=3, n_informative=3)
+    df = _create_data(
+        n_samples=100,
+        n_features=5,
+        n_classes=3,
+        n_informative=3,
+        reg=(problem_type == "regression"),
+    )
     log_data_run = log_data_function.run(
         handler="_log_data",
         params={"table": DATA_PATH},
@@ -127,7 +207,7 @@ def test_data_already_loaded():
             name="task-describe",
             handler="analyze",
             inputs={"table": log_data_run.outputs["dataset"]},
-            params={"label_column": "label"},
+            params={"label_column": "label", "problem_type": problem_type},
             artifact_path=os.path.abspath("./artifacts"),
             local=True,
         )
@@ -139,14 +219,13 @@ def test_data_already_loaded():
     created_artifact = [*describe_run.outputs.keys()]
 
     expected_artifacts = [
-        f"histogram_{col}" for col in df.columns if col is not "label"
-    ] + [
-        "correlation-matrix csv",
-        "correlation-matrix",
-        "histograms matrix",
+        "correlation-matrix-csv",
+        "correlation",
+        "scatter-2d",
         "imbalance",
         "imbalance-weights-vec",
         "violin",
+        "histograms",
     ]
     for artifact in expected_artifacts:
         if artifact not in created_artifact:
@@ -165,21 +244,105 @@ def _log_data(context: MLClientCtx, table: str):
     context.log_dataset(key="dataset", db_key="dataset", stats=True, df=df)
 
 
-def _create_data(n_samples, n_features, n_classes, n_informative):
+def _create_data(n_samples, n_features, n_classes, n_informative, reg=False):
     """
     Create df and save it as artifacts/random_dataset.parquet
     """
-    X, y = make_classification(
-        n_samples=n_samples,
-        n_features=n_features,
-        n_classes=n_classes,
-        n_informative=n_informative,
-        n_redundant=0,
-        n_repeated=0,
-        random_state=18,
-        class_sep=2,
-    )
+    if not reg:
+        X, y = make_classification(
+            n_samples=n_samples,
+            n_features=n_features,
+            n_classes=n_classes,
+            n_informative=n_informative,
+            n_redundant=0,
+            n_repeated=0,
+            random_state=18,
+            class_sep=2,
+        )
+    else:
+        X, y = make_regression(
+            n_samples=n_samples,
+            n_features=n_features,
+            n_informative=n_informative,
+            random_state=18,
+        )
     df = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(n_features)])
     df["label"] = y
     df.to_parquet("artifacts/random_dataset.parquet")
     return df
+
+
+def _create_dask_func(uri):
+    dask_cluster_name = "dask-cluster"
+    dask_cluster = new_function(dask_cluster_name, kind="dask", image="mlrun/ml-models")
+    dask_cluster.spec.remote = False
+    dask_uri = uri
+    dask_cluster.export(dask_uri)
+
+
+def test_import_function_describe_dask():
+    dask_uri = "dask_func.yaml"
+    _create_dask_func(dask_uri)
+    describe_func = import_function("function.yaml")
+    is_test_passed = True
+    _create_data(n_samples=100, n_features=5, n_classes=3, n_informative=3)
+    describe_func.spec.command = "describe_dask.py"
+
+    try:
+        describe_run = describe_func.run(
+            name="task-describe",
+            handler="analyze",
+            inputs={"table": DATA_PATH},
+            params={
+                "label_column": "label",
+                "dask_function": dask_uri,
+                "dask_flag": True,
+            },
+            artifact_path=os.path.abspath("./artifacts"),
+            local=True,
+        )
+
+    except Exception as exception:
+        print(f"- The test failed - raised the following error:\n- {exception}")
+        is_test_passed = False
+    _validate_paths(
+        {
+            "imbalance.html",
+            "imbalance-weights-vec.csv",
+        }
+    )
+    assert is_test_passed
+
+
+def test_code_to_function_describe_dask():
+    dask_uri = "dask_func.yaml"
+    _create_dask_func(dask_uri)
+    describe_func = code_to_function(filename="describe.py", kind="local")
+    is_test_passed = True
+    _create_data(n_samples=100, n_features=5, n_classes=3, n_informative=3)
+    describe_func.spec.command = "describe_dask.py"
+
+    try:
+        describe_run = describe_func.run(
+            name="task-describe",
+            handler="analyze",
+            inputs={"table": DATA_PATH},
+            params={
+                "label_column": "label",
+                "dask_function": dask_uri,
+                "dask_flag": True,
+            },
+            artifact_path=os.path.abspath("./artifacts"),
+            local=True,
+        )
+
+    except Exception as exception:
+        print(f"- The test failed - raised the following error:\n- {exception}")
+        is_test_passed = False
+    _validate_paths(
+        {
+            "imbalance.html",
+            "imbalance-weights-vec.csv",
+        }
+    )
+    assert is_test_passed
